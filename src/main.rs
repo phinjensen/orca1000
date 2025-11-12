@@ -54,6 +54,42 @@ unsafe fn memset(buf: *mut u8, c: u8, n: usize) {
     }
 }
 
+unsafe fn memcpy(mut dest: *mut u8, mut source: *mut u8, n: usize) {
+    for _ in 0..n {
+        unsafe {
+            dest.write(source.read());
+            dest = dest.wrapping_add(1);
+            source = source.wrapping_add(1);
+        }
+    }
+}
+
+fn strcpy(mut dest: *mut u8, mut source: *const u8) -> *mut u8 {
+    let result = dest.clone();
+    unsafe {
+        while source.read() != 0 {
+            dest.write(source.read());
+            dest = dest.add(1);
+            source = source.add(1);
+        }
+    }
+    return result;
+}
+
+fn strcmp(mut s1: *const u8, mut s2: *const u8) {
+    unsafe {
+        loop {
+            let c1 = s1.read();
+            let c2 = s2.read();
+            if c1 == 0 || c2 == 0 || c1 != c2 {
+                break;
+            };
+            s1 = s1.add(1);
+            s2 = s2.add(2);
+        }
+    }
+}
+
 pub struct DebugConsoleWriter;
 
 impl Write for DebugConsoleWriter {
