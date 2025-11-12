@@ -65,19 +65,21 @@ impl Write for DebugConsoleWriter {
     }
 }
 
+#[allow(unused)]
 macro_rules! dprint {
     ($($arg:tt)*) => {{
-        write!(DebugConsoleWriter, "{}", format_args!($($arg)*));
+        write!(DebugConsoleWriter, "{}", format_args!($($arg)*)).ok();
     }}
 }
 
+#[allow(unused)]
 macro_rules! dprintln {
     () => {{
-        write!(DebugConsoleWriter, "\n");
+        write!(DebugConsoleWriter, "\n").ok();
     }};
 
     ($($arg:tt)*) => {{
-        write!(DebugConsoleWriter, "{}\n", format_args!($($arg)*));
+        write!(DebugConsoleWriter, "{}\n", format_args!($($arg)*)).ok();
     }}
 }
 
