@@ -1,7 +1,7 @@
 #![no_std]
 #![no_main]
 
-use core::{arch::asm, panic::PanicInfo, slice};
+use core::{arch::asm, fmt::Write, panic::PanicInfo, slice};
 
 #[panic_handler]
 fn panic(_info: &PanicInfo) -> ! {
@@ -54,6 +54,33 @@ unsafe fn memset(buf: *mut u8, c: u8, n: usize) {
     }
 }
 
+pub struct DebugConsoleWriter;
+
+impl Write for DebugConsoleWriter {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        for b in s.as_bytes() {
+            putchar(*b);
+        }
+        Ok(())
+    }
+}
+
+macro_rules! dprint {
+    ($($arg:tt)*) => {{
+        write!(DebugConsoleWriter, "{}", format_args!($($arg)*));
+    }}
+}
+
+macro_rules! dprintln {
+    () => {{
+        write!(DebugConsoleWriter, "\n");
+    }};
+
+    ($($arg:tt)*) => {{
+        write!(DebugConsoleWriter, "{}\n", format_args!($($arg)*));
+    }}
+}
+
 #[unsafe(no_mangle)]
 pub fn kernel_main() -> ! {
     unsafe extern "C" {
@@ -69,8 +96,9 @@ pub fn kernel_main() -> ! {
         );
     }
 
-    for char in "\n\nhello world\n".bytes() {
-        putchar(char);
+    for place in ["world", "house", "friends"] {
+        dprintln!("Hello {}!", place);
+        dprintln!();
     }
 
     loop {
