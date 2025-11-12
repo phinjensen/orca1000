@@ -1,7 +1,7 @@
 #![no_std]
 #![no_main]
 
-use core::{arch::asm, panic::PanicInfo};
+use core::{arch::asm, panic::PanicInfo, slice};
 
 #[panic_handler]
 fn panic(_info: &PanicInfo) -> ! {
@@ -47,11 +47,32 @@ pub fn putchar(char: u8) {
     sbi_call(char as _, 0, 0, 0, 0, 0, 0, 1);
 }
 
+unsafe fn memset(buf: *mut u8, c: u8, n: usize) {
+    let buf: &mut [u8] = unsafe { slice::from_raw_parts_mut(buf, n) };
+    for i in 0..buf.len() {
+        buf[i] = c;
+    }
+}
+
 #[unsafe(no_mangle)]
 pub fn kernel_main() -> ! {
+    unsafe extern "C" {
+        static mut __bss: u8;
+        static __bss_end: u8;
+    }
+
+    unsafe {
+        memset(
+            &raw mut __bss,
+            0,
+            (&raw const __bss_end).offset_from_unsigned(&raw const __bss),
+        );
+    }
+
     for char in "\n\nhello world\n".bytes() {
         putchar(char);
     }
+
     loop {
         unsafe { asm!("wfi") }
     }
@@ -60,7 +81,7 @@ pub fn kernel_main() -> ! {
 #[unsafe(no_mangle)]
 pub extern "C" fn boot() -> ! {
     unsafe extern "C" {
-        static mut __stack_top: u8;
+        static __stack_top: u8;
     }
 
     unsafe {
