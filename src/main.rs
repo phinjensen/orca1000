@@ -1,7 +1,13 @@
 #![no_std]
 #![no_main]
 
-use core::{arch::asm, fmt::Write, panic::PanicInfo, slice};
+use core::{
+    arch::asm,
+    fmt::Write,
+    panic::PanicInfo,
+    slice,
+    sync::atomic::{AtomicPtr, AtomicU32, Ordering},
+};
 
 pub struct DebugConsoleWriter;
 
@@ -100,6 +106,23 @@ fn sbi_call(
 
 pub fn putchar(char: u8) {
     sbi_call(char as _, 0, 0, 0, 0, 0, 0, 1);
+}
+
+unsafe extern "C" {
+    static mut __free_ram: u8;
+    static mut __free_ram_end: u8;
+}
+
+const PAGE_SIZE: usize = 4096;
+
+fn alloc_pages(n: usize) -> *mut u8 {
+    static NEXT_PADDR: AtomicPtr<u8> = AtomicPtr::new(&raw mut __free_ram);
+    let paddr = NEXT_PADDR.load(Ordering::Relaxed);
+    NEXT_PADDR.store(unsafe { paddr.add(n * PAGE_SIZE) }, Ordering::Relaxed);
+    unsafe {
+        memset(paddr, 0, n * PAGE_SIZE);
+    }
+    return paddr;
 }
 
 unsafe fn memset(buf: *mut u8, c: u8, n: usize) {
@@ -268,8 +291,67 @@ pub fn stvec_handler() {
     }
 }
 
+const MAX_PROCESSES: u8 = 8;
+
+enum ProcessState {
+    UNUSED,
+    RUNNABLE,
+}
+
+struct Process {
+    pid: u32,
+    state: ProcessState,
+    stack_pointer: *mut u8,
+    stack: [u8; 8192],
+}
+
+//fn switch_context(previous: *mut u8, next: *mut u8) {
+//    unsafe {
+//        asm!(
+//            // Save callee-saved registers onto the current process's stack.
+//            "addi sp, sp, -13 * 4", // Allocate stack space for 13 4-byte registers
+//            "sw ra,  0  * 4(sp)",   // Save callee-saved registers only
+//            "sw s0,  1  * 4(sp)",
+//            "sw s1,  2  * 4(sp)",
+//            "sw s2,  3  * 4(sp)",
+//            "sw s3,  4  * 4(sp)",
+//            "sw s4,  5  * 4(sp)",
+//            "sw s5,  6  * 4(sp)",
+//            "sw s6,  7  * 4(sp)",
+//            "sw s7,  8  * 4(sp)",
+//            "sw s8,  9  * 4(sp)",
+//            "sw s9,  10 * 4(sp)",
+//            "sw s10, 11 * 4(sp)",
+//            "sw s11, 12 * 4(sp)",
+//            // Switch the stack pointer.
+//            "sw sp, ({})", // *prev_sp = sp;
+//            "lw sp, ({})", // Switch stack pointer (sp) here
+//            // Restore callee-saved registers from the next process's stack.
+//            "lw ra,  0  * 4(sp)", // Restore callee-saved registers only
+//            "lw s0,  1  * 4(sp)",
+//            "lw s1,  2  * 4(sp)",
+//            "lw s2,  3  * 4(sp)",
+//            "lw s3,  4  * 4(sp)",
+//            "lw s4,  5  * 4(sp)",
+//            "lw s5,  6  * 4(sp)",
+//            "lw s6,  7  * 4(sp)",
+//            "lw s7,  8  * 4(sp)",
+//            "lw s8,  9  * 4(sp)",
+//            "lw s9,  10 * 4(sp)",
+//            "lw s10, 11 * 4(sp)",
+//            "lw s11, 12 * 4(sp)",
+//            "addi sp, sp, 13 * 4", // We've popped 13 4-byte registers from the stack
+//            "ret",
+//            out(reg) previous,
+//            in(reg) next,
+//        );
+//    }
+//}
+
 #[unsafe(no_mangle)]
 pub fn kernel_main() -> ! {
+    write_csr!(stvec, stvec_handler as *const ());
+
     unsafe extern "C" {
         static mut __bss: u8;
         static __bss_end: u8;
@@ -283,15 +365,10 @@ pub fn kernel_main() -> ! {
         );
     }
 
-    for place in ["world", "house", "friends"] {
-        dprintln!("Hello {}!", place);
-        dprintln!();
-    }
-
-    write_csr!(stvec, stvec_handler as *const ());
-    unsafe {
-        asm!("unimp");
-    }
+    let paddr0 = alloc_pages(2);
+    let paddr1 = alloc_pages(1);
+    dprintln!("alloc_pages test: paddr0={:p}\n", paddr0);
+    dprintln!("alloc_pages test: paddr1={:p}\n", paddr1);
 
     loop {
         unsafe { asm!("wfi") }
