@@ -5,8 +5,8 @@ use core::{
     arch::asm,
     fmt::Write,
     panic::PanicInfo,
-    slice,
-    sync::atomic::{AtomicPtr, AtomicU32, Ordering},
+    ptr, slice,
+    sync::atomic::{AtomicPtr, Ordering},
 };
 
 pub struct DebugConsoleWriter;
@@ -115,6 +115,7 @@ unsafe extern "C" {
 
 const PAGE_SIZE: usize = 4096;
 
+#[allow(unused)]
 fn alloc_pages(n: usize) -> *mut u8 {
     static NEXT_PADDR: AtomicPtr<u8> = AtomicPtr::new(&raw mut __free_ram);
     let paddr = NEXT_PADDR.load(Ordering::Relaxed);
@@ -291,62 +292,156 @@ pub fn stvec_handler() {
     }
 }
 
-const MAX_PROCESSES: u8 = 8;
+const MAX_PROCESSES: usize = 8;
+const PROCESS_STACK_SIZE: usize = 8192;
 
-enum ProcessState {
-    UNUSED,
-    RUNNABLE,
-}
+//enum ProcessState {
+//    UNUSED,
+//    RUNNABLE,
+//}
 
 struct Process {
-    pid: u32,
-    state: ProcessState,
-    stack_pointer: *mut u8,
-    stack: [u8; 8192],
+    _pid: usize,
+    //state: ProcessState,
+    stack_index: usize,
+    stack: [u8; PROCESS_STACK_SIZE],
 }
 
-//fn switch_context(previous: *mut u8, next: *mut u8) {
-//    unsafe {
-//        asm!(
-//            // Save callee-saved registers onto the current process's stack.
-//            "addi sp, sp, -13 * 4", // Allocate stack space for 13 4-byte registers
-//            "sw ra,  0  * 4(sp)",   // Save callee-saved registers only
-//            "sw s0,  1  * 4(sp)",
-//            "sw s1,  2  * 4(sp)",
-//            "sw s2,  3  * 4(sp)",
-//            "sw s3,  4  * 4(sp)",
-//            "sw s4,  5  * 4(sp)",
-//            "sw s5,  6  * 4(sp)",
-//            "sw s6,  7  * 4(sp)",
-//            "sw s7,  8  * 4(sp)",
-//            "sw s8,  9  * 4(sp)",
-//            "sw s9,  10 * 4(sp)",
-//            "sw s10, 11 * 4(sp)",
-//            "sw s11, 12 * 4(sp)",
-//            // Switch the stack pointer.
-//            "sw sp, ({})", // *prev_sp = sp;
-//            "lw sp, ({})", // Switch stack pointer (sp) here
-//            // Restore callee-saved registers from the next process's stack.
-//            "lw ra,  0  * 4(sp)", // Restore callee-saved registers only
-//            "lw s0,  1  * 4(sp)",
-//            "lw s1,  2  * 4(sp)",
-//            "lw s2,  3  * 4(sp)",
-//            "lw s3,  4  * 4(sp)",
-//            "lw s4,  5  * 4(sp)",
-//            "lw s5,  6  * 4(sp)",
-//            "lw s6,  7  * 4(sp)",
-//            "lw s7,  8  * 4(sp)",
-//            "lw s8,  9  * 4(sp)",
-//            "lw s9,  10 * 4(sp)",
-//            "lw s10, 11 * 4(sp)",
-//            "lw s11, 12 * 4(sp)",
-//            "addi sp, sp, 13 * 4", // We've popped 13 4-byte registers from the stack
-//            "ret",
-//            out(reg) previous,
-//            in(reg) next,
-//        );
-//    }
-//}
+impl Process {
+    fn new(_pid: usize) -> Self {
+        Self {
+            _pid,
+            stack_index: PROCESS_STACK_SIZE - 1,
+            stack: [0; PROCESS_STACK_SIZE],
+        }
+    }
+
+    #[allow(unused)]
+    fn stack_push_u8(&mut self, val: u8) {
+        self.stack[self.stack_index] = val;
+        self.stack_index -= 1;
+    }
+
+    fn stack_push_usize(&mut self, val: usize) {
+        unsafe {
+            let as_usize: &mut [usize] = slice::from_raw_parts_mut(
+                (&raw const self.stack) as *mut usize,
+                PROCESS_STACK_SIZE / 4,
+            );
+            as_usize[self.stack_index / 4] = val;
+            self.stack_index -= 4;
+        }
+    }
+
+    fn get_stack_pointer(&mut self) -> *mut u8 {
+        &raw mut self.stack[self.stack_index]
+    }
+}
+
+fn switch_context(previous: *mut u8, next: *mut u8) {
+    unsafe {
+        asm!(
+            // Save callee-saved registers onto the current process's stack.
+            "addi sp, sp, -13 * 4", // Allocate stack space for 13 4-byte registers
+            "sw ra,  0  * 4(sp)",   // Save callee-saved registers only
+            "sw s0,  1  * 4(sp)",
+            "sw s1,  2  * 4(sp)",
+            "sw s2,  3  * 4(sp)",
+            "sw s3,  4  * 4(sp)",
+            "sw s4,  5  * 4(sp)",
+            "sw s5,  6  * 4(sp)",
+            "sw s6,  7  * 4(sp)",
+            "sw s7,  8  * 4(sp)",
+            "sw s8,  9  * 4(sp)",
+            "sw s9,  10 * 4(sp)",
+            "sw s10, 11 * 4(sp)",
+            "sw s11, 12 * 4(sp)",
+            // Switch the stack pointer.
+            "sw sp, ({})", // *prev_sp = sp;
+            "lw sp, ({})", // Switch stack pointer (sp) here
+            // Restore callee-saved registers from the next process's stack.
+            "lw ra,  0  * 4(sp)", // Restore callee-saved registers only
+            "lw s0,  1  * 4(sp)",
+            "lw s1,  2  * 4(sp)",
+            "lw s2,  3  * 4(sp)",
+            "lw s3,  4  * 4(sp)",
+            "lw s4,  5  * 4(sp)",
+            "lw s5,  6  * 4(sp)",
+            "lw s6,  7  * 4(sp)",
+            "lw s7,  8  * 4(sp)",
+            "lw s8,  9  * 4(sp)",
+            "lw s9,  10 * 4(sp)",
+            "lw s10, 11 * 4(sp)",
+            "lw s11, 12 * 4(sp)",
+            "addi sp, sp, 13 * 4", // We've popped 13 4-byte registers from the stack
+            "ret",
+            in(reg) previous,
+            in(reg) next,
+        );
+    }
+}
+
+struct ProcessHandler {
+    processes: [Option<Process>; MAX_PROCESSES],
+}
+
+impl ProcessHandler {
+    fn new() -> Self {
+        Self {
+            processes: [const { None }; MAX_PROCESSES],
+        }
+    }
+
+    fn create_process(&mut self, pc: *const u8) -> *mut Process {
+        let (pid, slot) = self
+            .processes
+            .iter_mut()
+            .enumerate()
+            .find(|(_, p)| p.is_none())
+            .expect("no free process slots");
+        let mut new_process = Process::new(pid);
+        for _ in 0..12 {
+            new_process.stack_push_usize(0); //s0-s11
+        }
+        new_process.stack_push_usize(pc as usize);
+        *slot = Some(new_process);
+        slot.as_mut().unwrap()
+    }
+}
+
+fn delay() {
+    for _ in 0..30000000 {
+        unsafe { asm!("nop") };
+    }
+}
+
+static PROC_A: AtomicPtr<Process> = AtomicPtr::new(ptr::null_mut());
+static PROC_B: AtomicPtr<Process> = AtomicPtr::new(ptr::null_mut());
+
+fn proc_a_entry() {
+    dprintln!("starting process A\n");
+    loop {
+        putchar('A' as u8);
+        let sp_a = unsafe { PROC_A.load(Ordering::Relaxed).read() }.get_stack_pointer();
+        let p_b = PROC_B.load(Ordering::Relaxed);
+        let mut b = unsafe { p_b.read() };
+        let sp_b = b.get_stack_pointer();
+        switch_context(sp_a, sp_b);
+        delay();
+    }
+}
+
+fn proc_b_entry() {
+    dprintln!("starting process B\n");
+    loop {
+        putchar('B' as u8);
+        switch_context(
+            unsafe { PROC_B.load(Ordering::Relaxed).read() }.get_stack_pointer(),
+            unsafe { PROC_A.load(Ordering::Relaxed).read() }.get_stack_pointer(),
+        );
+        delay();
+    }
+}
 
 #[unsafe(no_mangle)]
 pub fn kernel_main() -> ! {
@@ -365,10 +460,17 @@ pub fn kernel_main() -> ! {
         );
     }
 
-    let paddr0 = alloc_pages(2);
-    let paddr1 = alloc_pages(1);
-    dprintln!("alloc_pages test: paddr0={:p}\n", paddr0);
-    dprintln!("alloc_pages test: paddr1={:p}\n", paddr1);
+    let mut ph = ProcessHandler::new();
+
+    PROC_A.store(
+        ph.create_process(proc_a_entry as *const u8),
+        Ordering::Relaxed,
+    );
+    PROC_B.store(
+        ph.create_process(proc_b_entry as *const u8),
+        Ordering::Relaxed,
+    );
+    proc_a_entry();
 
     loop {
         unsafe { asm!("wfi") }
