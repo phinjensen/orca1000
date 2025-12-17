@@ -2,7 +2,7 @@
 #![no_main]
 
 use core::{
-    arch::asm,
+    arch::{asm, naked_asm},
     fmt::Write,
     panic::PanicInfo,
     ptr, slice,
@@ -303,7 +303,7 @@ const PROCESS_STACK_SIZE: usize = 8192;
 struct Process {
     _pid: usize,
     //state: ProcessState,
-    stack_index: usize,
+    stack_pointer: *mut u8,
     stack: [u8; PROCESS_STACK_SIZE],
 }
 
@@ -311,74 +311,70 @@ impl Process {
     fn new(_pid: usize) -> Self {
         Self {
             _pid,
-            stack_index: PROCESS_STACK_SIZE - 1,
+            stack_pointer: ptr::null_mut(),
             stack: [0; PROCESS_STACK_SIZE],
         }
     }
 
     #[allow(unused)]
     fn stack_push_u8(&mut self, val: u8) {
-        self.stack[self.stack_index] = val;
-        self.stack_index -= 1;
+        unsafe {
+            self.stack_pointer = self.stack_pointer.sub(1);
+            self.stack_pointer.write(val);
+        }
     }
 
     fn stack_push_usize(&mut self, val: usize) {
         unsafe {
-            let as_usize: &mut [usize] = slice::from_raw_parts_mut(
-                (&raw const self.stack) as *mut usize,
-                PROCESS_STACK_SIZE / 4,
-            );
-            as_usize[self.stack_index / 4] = val;
-            self.stack_index -= 4;
+            let p = (self.stack_pointer as *mut usize).sub(1);
+            p.write(val);
+            self.stack_pointer = p as *mut u8;
         }
     }
 
-    fn get_stack_pointer(&mut self) -> *mut u8 {
-        &raw mut self.stack[self.stack_index]
+    fn get_stack_pointer(&self) -> &*mut u8 {
+        &&self.stack_pointer
     }
 }
 
-fn switch_context(previous: *mut u8, next: *mut u8) {
-    unsafe {
-        asm!(
-            // Save callee-saved registers onto the current process's stack.
-            "addi sp, sp, -13 * 4", // Allocate stack space for 13 4-byte registers
-            "sw ra,  0  * 4(sp)",   // Save callee-saved registers only
-            "sw s0,  1  * 4(sp)",
-            "sw s1,  2  * 4(sp)",
-            "sw s2,  3  * 4(sp)",
-            "sw s3,  4  * 4(sp)",
-            "sw s4,  5  * 4(sp)",
-            "sw s5,  6  * 4(sp)",
-            "sw s6,  7  * 4(sp)",
-            "sw s7,  8  * 4(sp)",
-            "sw s8,  9  * 4(sp)",
-            "sw s9,  10 * 4(sp)",
-            "sw s10, 11 * 4(sp)",
-            "sw s11, 12 * 4(sp)",
-            // Switch the stack pointer.
-            "sw sp, ({})", // *prev_sp = sp;
-            "lw sp, ({})", // Switch stack pointer (sp) here
-            // Restore callee-saved registers from the next process's stack.
-            "lw ra,  0  * 4(sp)", // Restore callee-saved registers only
-            "lw s0,  1  * 4(sp)",
-            "lw s1,  2  * 4(sp)",
-            "lw s2,  3  * 4(sp)",
-            "lw s3,  4  * 4(sp)",
-            "lw s4,  5  * 4(sp)",
-            "lw s5,  6  * 4(sp)",
-            "lw s6,  7  * 4(sp)",
-            "lw s7,  8  * 4(sp)",
-            "lw s8,  9  * 4(sp)",
-            "lw s9,  10 * 4(sp)",
-            "lw s10, 11 * 4(sp)",
-            "lw s11, 12 * 4(sp)",
-            "addi sp, sp, 13 * 4", // We've popped 13 4-byte registers from the stack
-            "ret",
-            in(reg) previous,
-            in(reg) next,
-        );
-    }
+#[unsafe(naked)]
+unsafe extern "C" fn switch_context(previous: &*mut u8, next: &*mut u8) {
+    naked_asm!(
+        // Save callee-saved registers onto the current process's stack.
+        "addi sp, sp, -13 * 4", // Allocate stack space for 13 4-byte registers
+        "sw ra,  0  * 4(sp)",   // Save callee-saved registers only
+        "sw s0,  1  * 4(sp)",
+        "sw s1,  2  * 4(sp)",
+        "sw s2,  3  * 4(sp)",
+        "sw s3,  4  * 4(sp)",
+        "sw s4,  5  * 4(sp)",
+        "sw s5,  6  * 4(sp)",
+        "sw s6,  7  * 4(sp)",
+        "sw s7,  8  * 4(sp)",
+        "sw s8,  9  * 4(sp)",
+        "sw s9,  10 * 4(sp)",
+        "sw s10, 11 * 4(sp)",
+        "sw s11, 12 * 4(sp)",
+        // Switch the stack pointer.
+        "sw sp, (a0)", // *prev_sp = sp;
+        "lw sp, (a1)", // Switch stack pointer (sp) here
+        // Restore callee-saved registers from the next process's stack.
+        "lw ra,  0  * 4(sp)", // Restore callee-saved registers only
+        "lw s0,  1  * 4(sp)",
+        "lw s1,  2  * 4(sp)",
+        "lw s2,  3  * 4(sp)",
+        "lw s3,  4  * 4(sp)",
+        "lw s4,  5  * 4(sp)",
+        "lw s5,  6  * 4(sp)",
+        "lw s6,  7  * 4(sp)",
+        "lw s7,  8  * 4(sp)",
+        "lw s8,  9  * 4(sp)",
+        "lw s9,  10 * 4(sp)",
+        "lw s10, 11 * 4(sp)",
+        "lw s11, 12 * 4(sp)",
+        "addi sp, sp, 13 * 4", // We've popped 13 4-byte registers from the stack
+        "ret"
+    );
 }
 
 struct ProcessHandler {
@@ -399,19 +395,27 @@ impl ProcessHandler {
             .enumerate()
             .find(|(_, p)| p.is_none())
             .expect("no free process slots");
-        let mut new_process = Process::new(pid);
+        let new_process = Process::new(pid);
+        *slot = Some(new_process);
+        let new_process = (*slot).as_mut().unwrap();
+        new_process.stack_pointer =
+            unsafe { (&raw mut new_process.stack as *mut u8).add(new_process.stack.len()) };
         for _ in 0..12 {
             new_process.stack_push_usize(0); //s0-s11
         }
         new_process.stack_push_usize(pc as usize);
-        *slot = Some(new_process);
         slot.as_mut().unwrap()
     }
 }
 
 fn delay() {
-    for _ in 0..30000000 {
+    let mut i = 0;
+    loop {
+        if i >= 30000000 {
+            break;
+        }
         unsafe { asm!("nop") };
+        i += 1;
     }
 }
 
@@ -422,11 +426,19 @@ fn proc_a_entry() {
     dprintln!("starting process A\n");
     loop {
         putchar('A' as u8);
-        let sp_a = unsafe { PROC_A.load(Ordering::Relaxed).read() }.get_stack_pointer();
-        let p_b = PROC_B.load(Ordering::Relaxed);
-        let mut b = unsafe { p_b.read() };
-        let sp_b = b.get_stack_pointer();
-        switch_context(sp_a, sp_b);
+        unsafe {
+            let sp_a = PROC_A
+                .load(Ordering::Relaxed)
+                .as_ref()
+                .unwrap()
+                .get_stack_pointer();
+            let sp_b = PROC_B
+                .load(Ordering::Relaxed)
+                .as_ref()
+                .unwrap()
+                .get_stack_pointer();
+            switch_context(sp_a, sp_b);
+        }
         delay();
     }
 }
@@ -435,10 +447,19 @@ fn proc_b_entry() {
     dprintln!("starting process B\n");
     loop {
         putchar('B' as u8);
-        switch_context(
-            unsafe { PROC_B.load(Ordering::Relaxed).read() }.get_stack_pointer(),
-            unsafe { PROC_A.load(Ordering::Relaxed).read() }.get_stack_pointer(),
-        );
+        unsafe {
+            let sp_a = PROC_A
+                .load(Ordering::Relaxed)
+                .as_ref()
+                .unwrap()
+                .get_stack_pointer();
+            let sp_b = PROC_B
+                .load(Ordering::Relaxed)
+                .as_ref()
+                .unwrap()
+                .get_stack_pointer();
+            switch_context(sp_b, sp_a);
+        }
         delay();
     }
 }
