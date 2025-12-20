@@ -378,17 +378,24 @@ unsafe extern "C" fn switch_context(previous: &*mut u8, next: &*mut u8) {
 }
 
 struct ProcessHandler {
+    idle_process: usize,
+    current_process: usize,
     processes: [Option<Process>; MAX_PROCESSES],
 }
 
 impl ProcessHandler {
     fn new() -> Self {
-        Self {
+        let mut result = Self {
+            idle_process: 0,
+            current_process: 0,
             processes: [const { None }; MAX_PROCESSES],
-        }
+        };
+        result.idle_process = result.create_process(ptr::null());
+        result.current_process = result.idle_process;
+        result
     }
 
-    fn create_process(&mut self, pc: *const u8) -> *mut Process {
+    fn create_process(&mut self, pc: *const u8) -> usize {
         let (pid, slot) = self
             .processes
             .iter_mut()
@@ -404,7 +411,11 @@ impl ProcessHandler {
             new_process.stack_push_usize(0); //s0-s11
         }
         new_process.stack_push_usize(pc as usize);
-        slot.as_mut().unwrap()
+        pid
+    }
+
+    fn get_process(&self, pid: usize) -> &Option<Process> {
+        return self.processes.get(pid).unwrap_or(&None);
     }
 }
 
@@ -419,48 +430,44 @@ fn delay() {
     }
 }
 
-static PROC_A: AtomicPtr<Process> = AtomicPtr::new(ptr::null_mut());
-static PROC_B: AtomicPtr<Process> = AtomicPtr::new(ptr::null_mut());
+static PROCESS_HANDLER: AtomicPtr<ProcessHandler> = AtomicPtr::new(ptr::null_mut());
+
+fn _yield() {
+    let ph = unsafe { PROCESS_HANDLER.load(Ordering::Relaxed).as_mut() }.unwrap();
+    let back_half = ph.processes.iter().enumerate().skip(ph.current_process);
+    let front_half = ph.processes.iter().enumerate().take(ph.current_process);
+    if let Some((i, next)) = back_half.chain(front_half).find(|(_, p)| p.is_some()) {
+        let previous = &ph.processes[ph.current_process]
+            .as_ref()
+            .expect("ProcessHandler.current_process should point to a process");
+        ph.current_process = i;
+        let next = &next.as_ref().unwrap();
+        unsafe {
+            switch_context(&previous.stack_pointer, &next.stack_pointer);
+        }
+        // context switch
+    }
+}
 
 fn proc_a_entry() {
-    dprintln!("starting process A\n");
+    dprintln!("starting process A");
     loop {
         putchar('A' as u8);
+        _yield();
         unsafe {
-            let sp_a = PROC_A
-                .load(Ordering::Relaxed)
-                .as_ref()
-                .unwrap()
-                .get_stack_pointer();
-            let sp_b = PROC_B
-                .load(Ordering::Relaxed)
-                .as_ref()
-                .unwrap()
-                .get_stack_pointer();
-            switch_context(sp_a, sp_b);
+            delay();
         }
-        delay();
     }
 }
 
 fn proc_b_entry() {
-    dprintln!("starting process B\n");
+    dprintln!("starting process B");
     loop {
         putchar('B' as u8);
+        _yield();
         unsafe {
-            let sp_a = PROC_A
-                .load(Ordering::Relaxed)
-                .as_ref()
-                .unwrap()
-                .get_stack_pointer();
-            let sp_b = PROC_B
-                .load(Ordering::Relaxed)
-                .as_ref()
-                .unwrap()
-                .get_stack_pointer();
-            switch_context(sp_b, sp_a);
+            delay();
         }
-        delay();
     }
 }
 
@@ -482,15 +489,9 @@ pub fn kernel_main() -> ! {
     }
 
     let mut ph = ProcessHandler::new();
-
-    PROC_A.store(
-        ph.create_process(proc_a_entry as *const u8),
-        Ordering::Relaxed,
-    );
-    PROC_B.store(
-        ph.create_process(proc_b_entry as *const u8),
-        Ordering::Relaxed,
-    );
+    PROCESS_HANDLER.store(&raw mut ph, Ordering::Relaxed);
+    ph.create_process(proc_a_entry as *const u8);
+    ph.create_process(proc_b_entry as *const u8);
     proc_a_entry();
 
     loop {
