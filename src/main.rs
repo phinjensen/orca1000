@@ -9,6 +9,46 @@ use core::{
     sync::atomic::{AtomicPtr, Ordering},
 };
 
+unsafe extern "C" {
+    //static mut __bss: u8;
+    //static __bss_end: u8;
+    //static __stack_top: u8;
+    static mut __free_ram: u8;
+    static mut __free_ram_end: u8;
+    //static __kernel_base: u8;
+}
+
+//const SATP_SV32: usize = 1usize << 31;
+//const PAGE_V: usize = 1usize;
+//const PAGE_R: usize = 1usize << 1;
+//const PAGE_W: usize = 1usize << 2;
+//const PAGE_X: usize = 1usize << 3;
+//const PAGE_U: usize = 1usize << 4;
+//
+//type PageTable = [usize; PAGE_SIZE];
+//
+//fn map_page(table1: &mut PageTable, vaddr: *mut PageTable, paddr: *mut PageTable, flags: usize) {
+//    if !vaddr.is_aligned() {
+//        panic!("unaligned vaddr {:p}", vaddr);
+//    }
+//    if !paddr.is_aligned() {
+//        panic!("unaligned paddr {:p}", paddr);
+//    }
+//    let vpn1 = (vaddr as usize) >> 22 & 0b1111111111;
+//    if (table1[vpn1] & PAGE_V) == 0 {
+//        let page_table = alloc_pages(1);
+//        table1[vpn1] = (((page_table as usize) / PAGE_SIZE) << 10) | PAGE_V;
+//    }
+//
+//    let vpn0 = (vaddr as usize) >> 12 & 0b1111111111;
+//    let table0 = unsafe {
+//        (((table1[vpn1] >> 10) * PAGE_SIZE) as *mut PageTable)
+//            .as_mut()
+//            .expect("table1[vpn1] must point to a valid page table")
+//    };
+//    table0[vpn0] = (((paddr as usize) / PAGE_SIZE) << 10) | flags | PAGE_V;
+//}
+
 pub struct DebugConsoleWriter;
 
 impl Write for DebugConsoleWriter {
@@ -106,11 +146,6 @@ fn sbi_call(
 
 pub fn putchar(char: u8) {
     sbi_call(char as _, 0, 0, 0, 0, 0, 0, 1);
-}
-
-unsafe extern "C" {
-    static mut __free_ram: u8;
-    static mut __free_ram_end: u8;
 }
 
 const PAGE_SIZE: usize = 4096;
@@ -220,6 +255,7 @@ pub fn stvec_handler() {
     unsafe {
         asm!(
             ".align 4",
+            // Retrieve the kernel stack of the running process from sscratch.
             "csrw sscratch, sp",
             "addi sp, sp, -4 * 31",
             "sw ra,  4 * 0(sp)",
@@ -252,8 +288,12 @@ pub fn stvec_handler() {
             "sw s9,  4 * 27(sp)",
             "sw s10, 4 * 28(sp)",
             "sw s11, 4 * 29(sp)",
+            // Retrieve and save the sp at the time of exception.
             "csrr a0, sscratch",
             "sw a0, 4 * 30(sp)",
+            // Reset the kernel stack
+            //"addi a0, sp, 4 * 31",
+            //"csrw sscratch, a0",
             "mv a0, sp",
             "call handle_trap",
             "lw ra,  4 * 0(sp)",
@@ -303,6 +343,7 @@ const PROCESS_STACK_SIZE: usize = 8192;
 struct Process {
     _pid: usize,
     //state: ProcessState,
+    //page_table: *mut PageTable,
     stack_pointer: *mut u8,
     stack: [u8; PROCESS_STACK_SIZE],
 }
@@ -311,6 +352,7 @@ impl Process {
     fn new(_pid: usize) -> Self {
         Self {
             _pid,
+            //page_table: ptr::null_mut(),
             stack_pointer: ptr::null_mut(),
             stack: [0; PROCESS_STACK_SIZE],
         }
@@ -330,10 +372,6 @@ impl Process {
             p.write(val);
             self.stack_pointer = p as *mut u8;
         }
-    }
-
-    fn get_stack_pointer(&self) -> &*mut u8 {
-        &&self.stack_pointer
     }
 }
 
@@ -385,14 +423,11 @@ struct ProcessHandler {
 
 impl ProcessHandler {
     fn new() -> Self {
-        let mut result = Self {
+        Self {
             idle_process: 0,
             current_process: 0,
             processes: [const { None }; MAX_PROCESSES],
-        };
-        result.idle_process = result.create_process(ptr::null());
-        result.current_process = result.idle_process;
-        result
+        }
     }
 
     fn create_process(&mut self, pc: *const u8) -> usize {
@@ -411,12 +446,29 @@ impl ProcessHandler {
             new_process.stack_push_usize(0); //s0-s11
         }
         new_process.stack_push_usize(pc as usize);
+
+        //let page_table = alloc_pages(1) as *mut PageTable;
+
+        //let mut paddr = &raw const __kernel_base as *const usize;
+        //while paddr < &raw const __free_ram_end as *const usize {
+        //    map_page(
+        //        unsafe { page_table.as_mut().unwrap() },
+        //        paddr as *mut PageTable,
+        //        paddr as *mut PageTable,
+        //        PAGE_R | PAGE_W | PAGE_X,
+        //    );
+        //    unsafe {
+        //        paddr = paddr.add(1);
+        //    }
+        //}
+
+        //new_process.page_table = page_table;
         pid
     }
 
-    fn get_process(&self, pid: usize) -> &Option<Process> {
-        return self.processes.get(pid).unwrap_or(&None);
-    }
+    //fn get_process(&self, pid: usize) -> &Option<Process> {
+    //    return self.processes.get(pid).unwrap_or(&None);
+    //}
 }
 
 fn delay() {
@@ -434,7 +486,7 @@ static PROCESS_HANDLER: AtomicPtr<ProcessHandler> = AtomicPtr::new(ptr::null_mut
 
 fn _yield() {
     let ph = unsafe { PROCESS_HANDLER.load(Ordering::Relaxed).as_mut() }.unwrap();
-    let back_half = ph.processes.iter().enumerate().skip(ph.current_process);
+    let back_half = ph.processes.iter().enumerate().skip(ph.current_process + 1);
     let front_half = ph.processes.iter().enumerate().take(ph.current_process);
     if let Some((i, next)) = back_half.chain(front_half).find(|(_, p)| p.is_some()) {
         let previous = &ph.processes[ph.current_process]
@@ -443,6 +495,14 @@ fn _yield() {
         ph.current_process = i;
         let next = &next.as_ref().unwrap();
         unsafe {
+            //asm!(
+            //    "sfence.vma",
+            //    "csrw satp, {}",
+            //    "sfence.vma",
+            //    "csrw sscratch, {}",
+            //    in(reg) SATP_SV32 | ((next.page_table as usize) / PAGE_SIZE),
+            //    in(reg) (&raw const next.stack).add(next.stack.len())
+            //);
             switch_context(&previous.stack_pointer, &next.stack_pointer);
         }
         // context switch
@@ -454,9 +514,7 @@ fn proc_a_entry() {
     loop {
         putchar('A' as u8);
         _yield();
-        unsafe {
-            delay();
-        }
+        delay();
     }
 }
 
@@ -465,9 +523,7 @@ fn proc_b_entry() {
     loop {
         putchar('B' as u8);
         _yield();
-        unsafe {
-            delay();
-        }
+        delay();
     }
 }
 
